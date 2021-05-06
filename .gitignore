@@ -1,0 +1,13 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+*.pdf
+*.png
+*.csv
+
+.DS_Store
+
+.ipynb_checkpoints/
+.snakemake/
