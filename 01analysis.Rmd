@@ -1,0 +1,1134 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(DESeq2)
+library(ggplot2)
+library(vsn)
+library(pheatmap)
+library(ggrepel)
+library(ggpubr)
+
+source("https://raw.githubusercontent.com/NUPulmonary/utils/master/R/plotPCA_manual.R")
+
+source("https://github.com/NUPulmonary/utils/raw/master/R/go_enrichment.R")
+```
+
+Set random seed
+```{r}
+set.seed(1066)
+```
+
+
+```{r}
+plot_lib_sizes <- function(data) {
+    df <- data.frame(lib.size = sort(colSums(data)))
+        ggplot(df, aes(x = reorder(rownames(df), lib.size), y = lib.size)) +
+        geom_col() +
+        ggtitle("Sorted library sizes") +
+        theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1)) +
+        xlab("")
+}
+```
+
+
+# Nasal samples from CF
+
+We have samples from 3 genotypes: Control, F508del homozygous and F508del heterozygous.
+We name them: control, F508del and CompHet respectively (compound heterozygotes).
+
+Also we have 2 samples from universal human RNA as control samples.
+
+Todo:
+1. PCA analysis
+2. DEGs between 3 groups with k-means clustering
+
+
+### Load and preprocess data
+
+```{r}
+data <- read.table("Validation_cohort_raw_counts_relabeled_for_upload_with_genes.txt", header = TRUE)
+```
+
+Pick only samples
+```{r}
+coldata <- data.frame(row.names = colnames(data)[3:ncol(data)])
+```
+
+```{r}
+rownames(coldata) <- sub("^X", "", rownames(coldata))
+```
+
+Prepare sample metadata:
+sample_type = sample / uhRNA
+genotype = uhRNA / control / F508del / CompHet
+
+```{r}
+coldata$sample_type <- "sample"
+coldata$sample_type[grepl("uhrna", rownames(coldata))] <- "uhRNA"
+```
+
+```{r}
+coldata$genotype <- "none"
+coldata$genotype[grepl("uhrna", rownames(coldata))] <- "uhRNA"
+coldata$genotype[grepl("Control", rownames(coldata))] <- "HV"
+coldata$genotype[grepl("F508del", rownames(coldata))] <- "F508del"
+coldata$genotype[grepl("CompHet", rownames(coldata))] <- "CompHet"
+```
+
+Separate counts
+```{r}
+counts <- as.matrix(data[, 3:ncol(data)])
+colnames(counts) <- sub("^X", "", colnames(counts))
+rownames(counts) <- data$Ensembl_ID
+```
+
+Now look! In the whole table there are no odd numbers! Isn't it strange…
+```{r}
+sum(counts %% 2 == 1)
+```
+
+```{r}
+plot_lib_sizes(counts / 2)
+```
+
+
+I'll just divide all counts by 2 then
+```{r}
+dds <- DESeqDataSetFromMatrix(counts / 2, coldata, ~ genotype)
+```
+
+Add gene info
+```{r}
+rowData(dds) <- data[, 1:2]
+```
+
+Remove genes with less than 11 counts across all samples
+```{r}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep, ]
+```
+
+### Check quality and structure
+
+Compute distances between samples
+```{r}
+sampleDists <- dist(t(assay(vst(dds))))
+```
+
+```{r}
+pheatmap(as.matrix(sampleDists), cluster_cols = FALSE, cluster_rows = FALSE, show_colnames = FALSE)
+```
+
+uhRNA cluster together and different from everything else, good!
+Some structure visible in Control group, good.
+CompHet and F508del groups seem to be split between themselves.
+
+Sample 4 seems to be an outlier.
+
+
+Let's plot PCA
+```{r}
+d <- plotPCA(vst(dds), intgroup = c("genotype"), returnData = TRUE)
+percentVar <- round(100 * attr(d, "percentVar"))
+
+ggplot(d, aes(x = PC1, y = PC2, color = genotype)) +
+  geom_point() + 
+  geom_label_repel(aes(label = sapply(colnames(dds), substr, 1, 2)), show.legend = FALSE) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed()
+```
+uhRNA are together and a bit apart from everything else, good!. Sample 4 is on the left.
+
+Let's remove it and see what happens.
+
+
+```{r}
+counts2 <- counts[, -4]
+coldata2 <- coldata[-4, ]
+```
+
+```{r}
+dds <- DESeqDataSetFromMatrix(counts2 / 2, coldata2, ~ genotype)
+```
+
+```{r}
+rowData(dds) <- data[, 1:2]
+```
+
+```{r}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep, ]
+```
+
+```{r}
+sampleDists <- dist(t(assay(vst(dds))))
+```
+
+```{r}
+pheatmap(as.matrix(sampleDists), cluster_cols = FALSE, cluster_rows = FALSE, show_colnames = FALSE)
+```
+Seems better.
+
+Check PCA
+
+```{r}
+d <- plotPCA(vst(dds), intgroup = c("genotype"), returnData = TRUE)
+percentVar <- round(100 * attr(d, "percentVar"))
+
+ggplot(d, aes(x = PC1, y = PC2, color = genotype)) +
+  geom_point() + 
+  geom_label_repel(aes(label = sapply(colnames(dds), substr, 1, 2)), show.legend = FALSE) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed()
+```
+A little bit better.
+
+### Remove uhRNA samples and move to DEGs
+
+```{r}
+ncol(counts2)
+```
+
+
+```{r}
+counts3 <- counts2[, c(-35, -36)]
+coldata3 <- coldata2[c(-35, -36), ]
+```
+
+```{r}
+rownames(counts3) <- data$Ensembl_ID
+```
+
+
+```{r}
+dds <- DESeqDataSetFromMatrix(counts3 / 2, coldata3, ~ genotype)
+```
+
+```{r}
+rowData(dds) <- data[, 1:2]
+```
+
+```{r}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep, ]
+```
+
+```{r}
+sampleDists <- dist(t(assay(vst(dds))))
+```
+
+```{r}
+pheatmap(as.matrix(sampleDists), cluster_cols = FALSE, cluster_rows = FALSE, show_colnames = FALSE)
+```
+
+Let's see normalization methods
+
+Log-norm
+```{r}
+meanSdPlot(assay(normTransform(dds)))
+```
+
+VST with parametric dispersions
+```{r}
+meanSdPlot(assay(vst(dds, blind = FALSE)))
+```
+
+VST with local dispersions
+```{r}
+meanSdPlot(assay(vst(dds, blind = FALSE, fitType = "local")))
+```
+
+Let's use local dispersion estimations
+
+PCA
+```{r}
+d <- plotPCA(
+  vst(dds, blind = FALSE, fitType = "local"), 
+  ntop = 2000,
+  intgroup = c("genotype"), 
+  returnData = TRUE
+)
+percentVar <- round(100 * attr(d, "percentVar"))
+
+ggplot(d, aes(x = PC1, y = PC2, color = genotype)) +
+  geom_point() + 
+  geom_label_repel(aes(label = sapply(colnames(dds), function(x) {strsplit(x, "_")[[1]][1]})), show.legend = FALSE) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed()
+```
+No clear structure. PC1 is most of variation, PC2 is much lower.
+Controls seem to be in lower right corner, while F508del and CompHet are spread out.
+
+Save as PDF
+```{r}
+pdf("01pca.pdf", width=8, height=6)
+ggplot(d, aes(x = PC1, y = PC2, color = genotype)) +
+  geom_point() + 
+  geom_label_repel(aes(label = sapply(colnames(dds), function(x) {strsplit(x, "_")[[1]][1]})), show.legend = FALSE) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  coord_fixed()
+dev.off()
+```
+
+
+Let's look at loadings of first PCs
+```{r}
+d <- plotPCA_manual(
+  vst(dds, blind = FALSE, fitType = "local"), 
+  intgroup = c("genotype"), 
+  ntop = 2000,
+  pcs = 10
+)
+percentVar <- round(100 * attr(d$data, "percentVar"))
+```
+
+```{r}
+loadings <- data.frame(d$pca$rotation)
+genes <- rownames(loadings)
+gene_table <- rowData(dds)
+for (i in 1:7) {
+  print(sprintf("PC%d: %d %% variance", i, percentVar[i]))
+  l <- loadings[, i]
+  ord <- order(abs(l), decreasing = TRUE)
+  g <- genes[ord][1:20]
+  v <- paste(gene_table[g, "Gene_Name"], " (", round(l[ord][1:20], 4), ")")
+  print(paste(v, collapse = ", "))
+  print("=============")
+}
+```
+
+Well, loadings seem to be:
+PC1: monocytes
+PC2: ciliated cells
+PC3: ????
+PC4: epithelial repair (???)
+PC5: inflammation
+
+
+Let's do K-means!
+
+First, LRT between 3 conditions
+```{r}
+dds <- DESeq(dds, fitType = "local", test = "LRT", reduced = ~ 1)
+```
+
+```{r}
+deseq_results <- as.data.frame(results(dds))
+```
+
+Now select significant genes
+```{r}
+genes_of_interest <- rownames(subset(deseq_results, padj < 0.05))
+```
+
+```{r}
+counts_mat_orig <- counts(dds, normalized = TRUE)
+dds_orig <- dds
+counts_mat <- counts_mat_orig[genes_of_interest, ]
+```
+
+```{r}
+counts_mat <- t(scale(t(counts_mat)))
+```
+
+I tried 6, 4 and 3
+```{r}
+k <- 3
+```
+
+```{r}
+kmeans_results <- as.data.frame(kmeans(x = counts_mat,
+                          centers = k, 
+                          iter.max = 1000, 
+                          nstart = 500)$cluster)
+```
+
+```{r}
+colnames(kmeans_results) <- "cluster"
+```
+
+```{r}
+kmeans_results <- kmeans_results[order(kmeans_results$cluster), , drop = FALSE]
+counts_mat <- counts_mat[rownames(kmeans_results), ]
+```
+
+```{r}
+gaps <- cumsum(table(kmeans_results))[1:k]
+```
+
+```{r}
+anno_col <- data.frame(colData(dds))[, c("genotype"), drop = FALSE]
+```
+
+```{r}
+plot <- pheatmap(counts_mat, 
+                  cluster_rows = FALSE,
+                  cluster_cols = TRUE,
+                  clustering_method = "ward.D2",
+                  gaps_row = gaps,
+                  show_colnames = TRUE,
+                  show_rownames = FALSE,
+                  labels_col = sapply(colnames(dds), function(x) {strsplit(x, "_")[[1]][1]}),
+                  annotation_col = anno_col,
+                  cutree_cols = 3,
+                  border_color = NA,
+                  angle_col = 90,
+                  annotation_colors = list("genotype" = c(
+                    "HV" = "blue",
+                    "F508del" = "darkred",
+                    "CompHet" = "darkorange3"
+                  )))
+```
+
+Save as PDF
+```{r}
+pdf("02kmeans.pdf", width=8, height=6)
+print(plot)
+dev.off()
+```
+
+```{r}
+write.csv(plot$tree_col$labels[plot$tree_col$order], "02kmeans-sample-order.csv")
+```
+
+
+```{r}
+kmeans_genes <- deseq_results[rownames(kmeans_results),]
+kmeans_genes$cluster <- kmeans_results[rownames(kmeans_genes), "cluster"]
+```
+
+Print top genes per cluster (lowest p-value)
+
+```{r}
+for (i in 1:k) {
+  print(sprintf("K-means cluster %d (%d)", i, sum(kmeans_genes$cluster == i)))
+  print("Lowest p-value genes")
+  this <- kmeans_genes[kmeans_genes$cluster == i,]
+  l <- this$padj
+  ord <- order(l, decreasing = FALSE)
+  g <- rownames(this)[ord][1:20]
+  v <- paste(gene_table[g, "Gene_Name"], " (", round(l[ord][1:20], 4), ")")
+  print(paste(v, collapse = ", "))
+  print("=============")
+}
+```
+
+Save the table
+```{r}
+kmeans_genes$gene_name <- gene_table[rownames(kmeans_genes), "Gene_Name"]
+write.csv(kmeans_genes, "02kmeans-genes.csv")
+```
+
+Cut kmeans sample groups
+```{r}
+kmeans.groups <- cutree(plot$tree_col, k = 3)
+```
+
+```{r}
+table(kmeans.groups)
+```
+
+```{r}
+group.names <- c("1" = "B", "2" = "A", "3" = "C")
+```
+
+```{r}
+kmeans.samples <- group.names[kmeans.groups]
+names(kmeans.samples) <- names(kmeans.groups)
+write.csv(kmeans.samples, "02kmeans-sample-groups.csv")
+```
+
+
+Run GO enrichment for each cluster
+```{r}
+genes_cluster1 <- rownames(kmeans_genes)[kmeans_genes$cluster == 1]
+go_cluster1 <- go_enrichment(dds_orig, genes_cluster1, go_annotations = "org.Hs.eg.db")
+```
+
+```{r}
+genes_cluster2 <- rownames(kmeans_genes)[kmeans_genes$cluster == 2]
+go_cluster2 <- go_enrichment(dds_orig, genes_cluster2, go_annotations = "org.Hs.eg.db")
+```
+
+```{r}
+genes_cluster3 <- rownames(kmeans_genes)[kmeans_genes$cluster == 3]
+go_cluster3 <- go_enrichment(dds_orig, genes_cluster3, go_annotations = "org.Hs.eg.db")
+```
+
+```{r}
+go_cluster1$cluster <- 1
+go_cluster2$cluster <- 2
+go_cluster3$cluster <- 3
+```
+
+```{r}
+go_processes <- rbind(go_cluster1, go_cluster2, go_cluster3)
+```
+
+```{r}
+write.csv(go_processes, "02kmeans-go-processes.csv")
+```
+
+
+## Pairwise comparisons
+
+k-means and deconvolution both identified three groups of samples: “epithelium-rich” cluster, containing controls, CF and heterozygotes, and two immune clusters, mostly containing CF and hets. 
+
+Let's run pairwise DEGs between 1) controls vs CF, 2) control vs hets, 3) CF vs hets using all samples. 
+
+```{r}
+dds <- DESeq(dds, fitType = "local")
+```
+### Control vs CF
+```{r}
+ctrl.vs.cf <- as.data.frame(results(dds, contrast = c("genotype", "HV", "F508del")))
+ctrl.vs.cf <- ctrl.vs.cf[!is.na(ctrl.vs.cf$padj), ]
+ctrl.vs.cf$sign <- ""
+ctrl.vs.cf$sign[(ctrl.vs.cf$log2FoldChange < 0) & (ctrl.vs.cf$padj < 0.05)] <- "Downregulated"
+ctrl.vs.cf$sign[(ctrl.vs.cf$log2FoldChange > 0) & (ctrl.vs.cf$padj < 0.05)] <- "Upregulated"
+ctrl.vs.cf <- ctrl.vs.cf[order(ctrl.vs.cf$sign),]
+```
+
+```{r}
+ace2_id <- gene_table$Ensembl_ID[gene_table$Gene_Name == "ACE2"]
+```
+
+```{r}
+ace2_data <- as.data.frame(merge(ctrl.vs.cf[ace2_id, ], gene_table[ace2_id, ]))
+```
+
+```{r}
+ggplot(ctrl.vs.cf, aes(x = baseMean, y = log2FoldChange)) + 
+  geom_point(aes(fill = sign, color = sign), shape = 21, stroke = 0.5) +
+  geom_label_repel(
+    aes(label = Gene_Name, fontface = "italic"), 
+    data = ace2_data,
+    box.padding = 0.5,
+    seed = 5000,
+  ) +
+  geom_point(aes(fill = sign), data = ace2_data, stroke = 0.5, shape = 21) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "darkred", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) +
+  scale_fill_manual(values = c("gray", "darkred", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 6e+04, y = 5, label = sprintf("Up in HV: %d", sum(ctrl.vs.cf$sign == "Upregulated"))) +
+  annotate("text", x = 6e+04, y = -6, label = sprintf("Up in homozygous\nF508del: %d", sum(ctrl.vs.cf$sign == "Downregulated"))) + 
+  ggtitle("HV vs CF F508del") +
+  theme(legend.position = "none")
+```
+
+Save as PDF
+```{r}
+pdf("03control-vs-f508del.pdf", width=6, height = 6)
+ggplot(ctrl.vs.cf, aes(x = baseMean, y = log2FoldChange)) + 
+  geom_point(aes(fill = sign, color = sign), shape = 21, stroke = 0.5) +
+  geom_label_repel(
+    aes(label = Gene_Name, fontface = "italic"), 
+    data = ace2_data,
+    box.padding = 0.5,
+    seed = 5000,
+  ) +
+  geom_point(aes(fill = sign), data = ace2_data, stroke = 0.5, shape = 21) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "darkred", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) +
+  scale_fill_manual(values = c("gray", "darkred", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 6e+04, y = 5, label = sprintf("Up in HV: %d", sum(ctrl.vs.cf$sign == "Upregulated"))) +
+  annotate("text", x = 6e+04, y = -6, label = sprintf("Up in homozygous\nF508del: %d", sum(ctrl.vs.cf$sign == "Downregulated"))) + 
+  ggtitle("HV vs CF F508del") +
+  theme(legend.position = "none")
+dev.off()
+```
+
+
+
+Let's verify the sign. Select most expressed upregulated gene
+```{r}
+upreg <- ctrl.vs.cf[ctrl.vs.cf$log2FoldChange > 0,]
+upreg[order(upreg$baseMean, decreasing = TRUE), ][1:5, ]
+```
+
+```{r}
+expr.df <- coldata3
+expr.df$MUC5AC <- counts_mat_orig[rownames(gene_table)[gene_table$Gene_Name == "MUC5AC"], ]
+```
+
+And plot it by genotype
+```{r}
+ggplot(expr.df) + geom_boxplot(aes(x = genotype, y = MUC5AC)) +
+  geom_jitter(aes(x = genotype, y = MUC5AC), height = 0, width = 0.1)
+```
+
+The sign is correct. Let's save results
+```{r}
+sign.only <- ctrl.vs.cf[ctrl.vs.cf$padj < 0.05, ]
+sign.only$gene_name <- gene_table[rownames(sign.only), "Gene_Name"]
+write.csv(sign.only[order(sign.only$log2FoldChange, decreasing = TRUE), ], "03ctrl-vs-cf.csv")
+```
+
+Here in control we see T cell signature (CD8A, CD3E etc), but it's not picked up by deconvolution.
+
+
+### Illustrate k-means cluster composition bias
+```{r}
+ciliated_secr_markers <- c("CAPS", "TPPP3", "BPIFA1")
+cil.df <- expr.df
+cil.df$MUC5AC <- NULL
+cil.df$cluster <- group.names[kmeans.groups]
+cil.df$cluster <- factor(cil.df$cluster, levels=c("A", "B", "C"))
+
+for (g in ciliated_secr_markers) {
+  cil.df[[g]] <- counts_mat_orig[rownames(gene_table)[gene_table$Gene_Name == g], ]
+}
+
+cil.df.long <- cil.df %>%
+  tidyr::pivot_longer(ciliated_secr_markers, names_to = "gene")
+
+ggplot(cil.df.long) + geom_boxplot(aes(x = cluster, y = value), outlier.shape = NA) +
+  geom_jitter(aes(x = cluster, y = value, shape = cluster), height = 0, width = 0.2, size = 2) +
+  facet_wrap(vars(gene), scales = "free_y") +
+  ylab("Normalized expression")
+```
+
+Save as PDF
+```{r}
+pdf("02kmeans-ciliated.pdf", width = 6, height = 3)
+ciliated_secr_markers <- c("CAPS", "TPPP3", "BPIFA1")
+cil.df <- expr.df
+cil.df$MUC5AC <- NULL
+cil.df$cluster <- group.names[kmeans.groups]
+cil.df$cluster <- factor(cil.df$cluster, levels=c("A", "B", "C"))
+
+for (g in ciliated_secr_markers) {
+  cil.df[[g]] <- counts_mat_orig[rownames(gene_table)[gene_table$Gene_Name == g], ]
+}
+
+cil.df.long <- cil.df %>%
+  tidyr::pivot_longer(ciliated_secr_markers, names_to = "gene")
+
+ggplot(cil.df.long) + geom_boxplot(aes(x = cluster, y = value), outlier.shape = NA) +
+  geom_jitter(aes(x = cluster, y = value, shape = cluster), height = 0, width = 0.2, size = 2) +
+  facet_wrap(vars(gene), scales = "free_y") +
+  ylab("Normalized expression")
+dev.off()
+```
+
+
+
+```{r}
+immune_markers <- c("CSF3R", "FCGR3B", "ITGA2")
+imm.df <- expr.df
+imm.df$MUC5AC <- NULL
+imm.df$cluster <- group.names[kmeans.groups]
+imm.df$cluster <- factor(imm.df$cluster, levels=c("A", "B", "C"))
+
+for (g in immune_markers) {
+  imm.df[[g]] <- counts_mat_orig[rownames(gene_table)[gene_table$Gene_Name == g], ]
+}
+
+imm.df.long <- imm.df %>%
+  tidyr::pivot_longer(immune_markers, names_to = "gene")
+
+ggplot(imm.df.long) + geom_boxplot(aes(x = cluster, y = value), outlier.shape = NA) +
+  geom_jitter(aes(x = cluster, y = value, shape = cluster), height = 0, width = 0.1, size = 2) +
+  facet_wrap(vars(gene), scales = "free_y") +
+  ylab("Normalized expression")
+```
+
+Save as PDF
+```{r}
+pdf("02kmeans-immune.pdf", width = 6, height = 3)
+immune_markers <- c("CSF3R", "FCGR3B", "ITGA2")
+imm.df <- expr.df
+imm.df$MUC5AC <- NULL
+imm.df$cluster <- group.names[kmeans.groups]
+imm.df$cluster <- factor(imm.df$cluster, levels=c("A", "B", "C"))
+
+for (g in immune_markers) {
+  imm.df[[g]] <- counts_mat_orig[rownames(gene_table)[gene_table$Gene_Name == g], ]
+}
+
+imm.df.long <- imm.df %>%
+  tidyr::pivot_longer(immune_markers, names_to = "gene")
+
+ggplot(imm.df.long) + geom_boxplot(aes(x = cluster, y = value), outlier.shape = NA) +
+  geom_jitter(aes(x = cluster, y = value, shape = cluster), height = 0, width = 0.1, size = 2) +
+  facet_wrap(vars(gene), scales = "free_y") +
+  ylab("Normalized expression")
+dev.off()
+```
+
+
+
+
+### Control vs CompHet
+```{r}
+ctrl.vs.het <- as.data.frame(results(dds, contrast = c("genotype", "HV", "CompHet")))
+ctrl.vs.het <- ctrl.vs.het[!is.na(ctrl.vs.het$padj), ]
+ctrl.vs.het$sign <- ""
+ctrl.vs.het$sign[(ctrl.vs.het$log2FoldChange < 0) & (ctrl.vs.het$padj < 0.05)] <- "Downregulated"
+ctrl.vs.het$sign[(ctrl.vs.het$log2FoldChange > 0) & (ctrl.vs.het$padj < 0.05)] <- "Upregulated"
+ctrl.vs.het <- ctrl.vs.het[order(ctrl.vs.het$sign),]
+```
+
+```{r}
+ace2_data <- as.data.frame(merge(ctrl.vs.het[ace2_id, ], gene_table[ace2_id, ]))
+```
+
+```{r}
+ggplot(ctrl.vs.het, aes(x = baseMean, y = log2FoldChange)) + 
+  geom_point(aes(fill = sign, color = sign), shape = 21, stroke = 0.5) +
+  geom_label_repel(
+    aes(label = Gene_Name, fontface = "italic"), 
+    data = ace2_data,
+    box.padding = 0.5,
+    seed = 5000,
+  ) +
+  geom_point(aes(fill = sign), data = ace2_data, stroke = 0.5, shape = 21) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "darkorange3", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  scale_fill_manual(values = c("gray", "darkorange3", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 6e+04, y = 4, label = sprintf("Up in HV: %d", sum(ctrl.vs.het$sign == "Upregulated"))) +
+  annotate("text", x = 6e+04, y = -6, label = sprintf("Up in CompHet: %d", sum(ctrl.vs.het$sign == "Downregulated"))) + 
+  ggtitle("HV vs CompHet") +
+  theme(legend.position = "none")
+```
+
+Save as PDF
+```{r}
+pdf("03control-vs-comphet.pdf", width=6, height=6)
+ggplot(ctrl.vs.het, aes(x = baseMean, y = log2FoldChange)) + 
+  geom_point(aes(fill = sign, color = sign), shape = 21, stroke = 0.5) +
+  geom_label_repel(
+    aes(label = Gene_Name, fontface = "italic"), 
+    data = ace2_data,
+    box.padding = 0.5,
+    seed = 5000,
+  ) +
+  geom_point(aes(fill = sign), data = ace2_data, stroke = 0.5, shape = 21) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "darkorange3", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  scale_fill_manual(values = c("gray", "darkorange3", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 6e+04, y = 4, label = sprintf("Up in HV: %d", sum(ctrl.vs.het$sign == "Upregulated"))) +
+  annotate("text", x = 6e+04, y = -6, label = sprintf("Up in CompHet: %d", sum(ctrl.vs.het$sign == "Downregulated"))) + 
+  ggtitle("HV vs CompHet") +
+  theme(legend.position = "none")
+dev.off()
+```
+
+
+```{r}
+sign.only <- ctrl.vs.het[ctrl.vs.het$padj < 0.05, ]
+sign.only$gene_name <- gene_table[rownames(sign.only), "Gene_Name"]
+write.csv(sign.only[order(sign.only$log2FoldChange, decreasing = TRUE), ], "03ctrl-vs-het.csv")
+```
+
+
+### CompHet vs CF
+```{r}
+het.vs.cf <- as.data.frame(results(dds, contrast = c("genotype", "CompHet", "F508del")))
+het.vs.cf <- het.vs.cf[!is.na(het.vs.cf$padj), ]
+het.vs.cf$sign <- ""
+het.vs.cf$sign[(het.vs.cf$log2FoldChange < 0) & (het.vs.cf$padj < 0.05)] <- "Downregulated"
+het.vs.cf$sign[(het.vs.cf$log2FoldChange > 0) & (het.vs.cf$padj < 0.05)] <- "Upregulated"
+het.vs.cf <- het.vs.cf[order(het.vs.cf$sign),]
+```
+
+```{r}
+ggplot(het.vs.cf) + 
+  geom_point(aes(x = baseMean, y = log2FoldChange, col = sign)) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "red", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 5e+04, y = 5, label = sprintf("Up in CompHet: %d", sum(het.vs.cf$sign == "Upregulated"))) +
+  annotate("text", x = 5e+04, y = -6, label = sprintf("Down in CompHet: %d", sum(het.vs.cf$sign == "Downregulated"))) + 
+  ggtitle("CompHet vs CF F508del")
+```
+No DEGs here!
+
+Save as PDF
+```{r}
+pdf("03comphet-vs-f508del.pdf", width=8, height=6)
+ggplot(het.vs.cf) + 
+  geom_point(aes(x = baseMean, y = log2FoldChange, col = sign)) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "red", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 5e+04, y = 5, label = sprintf("Up in CompHet: %d", sum(het.vs.cf$sign == "Upregulated"))) +
+  annotate("text", x = 5e+04, y = -6, label = sprintf("Down in CompHet: %d", sum(het.vs.cf$sign == "Downregulated"))) + 
+  ggtitle("CompHet vs CF F508del")
+dev.off()
+```
+
+
+## Pairwise comparisons within same k-means cluster
+
+Then let’s run this comparison using samples from “epithelial” cluster only, which we define by deconvolution
+
+```{r}
+epi.samples <- names(kmeans.groups[kmeans.groups == 2])
+```
+
+
+```{r}
+epi.counts <- counts[, epi.samples]
+epi.coldata <- coldata[epi.samples, ]
+dds <- DESeqDataSetFromMatrix(epi.counts / 2, epi.coldata, ~ genotype)
+```
+
+```{r}
+dds <- DESeq(dds, fitType = "local")
+```
+### Control vs CF
+```{r}
+ctrl.vs.cf <- as.data.frame(results(dds, contrast = c("genotype", "HV", "F508del")))
+ctrl.vs.cf <- ctrl.vs.cf[!is.na(ctrl.vs.cf$padj), ]
+ctrl.vs.cf$sign <- ""
+ctrl.vs.cf$sign[(ctrl.vs.cf$log2FoldChange < 0) & (ctrl.vs.cf$padj < 0.05)] <- "Downregulated"
+ctrl.vs.cf$sign[(ctrl.vs.cf$log2FoldChange > 0) & (ctrl.vs.cf$padj < 0.05)] <- "Upregulated"
+ctrl.vs.cf <- ctrl.vs.cf[order(ctrl.vs.cf$sign),]
+```
+
+```{r}
+ace2_data <- as.data.frame(merge(ctrl.vs.cf[ace2_id, ], gene_table[ace2_id, ]))
+```
+
+```{r}
+ggplot(ctrl.vs.cf, aes(x = baseMean, y = log2FoldChange)) + 
+  geom_point(aes(fill = sign, color = sign), shape = 21, stroke = 0.5) +
+    geom_label_repel(
+    aes(label = Gene_Name, fontface = "italic"), 
+    data = ace2_data,
+    box.padding = 0.5,
+    seed = 5000,
+  ) +
+  geom_point(aes(fill = sign), data = ace2_data, stroke = 0.5, shape = 21) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "darkred", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  scale_fill_manual(values = c("gray", "darkred", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 5e+04, y = 5, label = sprintf("Up in HV: %d", sum(ctrl.vs.cf$sign == "Upregulated"))) +
+  annotate("text", x = 5e+04, y = -4, label = sprintf("Up in homozygous\nF508del: %d", sum(ctrl.vs.cf$sign == "Downregulated"))) + 
+  ggtitle("HV vs CF F508del (Cluster A)") +
+  theme(legend.position = "none")
+```
+
+Save as PDF
+```{r}
+pdf("04epi-samples-control-vs-f508del.pdf", width=6, height=6)
+ggplot(ctrl.vs.cf, aes(x = baseMean, y = log2FoldChange)) + 
+  geom_point(aes(fill = sign, color = sign), shape = 21, stroke = 0.5) +
+    geom_label_repel(
+    aes(label = Gene_Name, fontface = "italic"), 
+    data = ace2_data,
+    box.padding = 0.5,
+    seed = 5000,
+  ) +
+  geom_point(aes(fill = sign), data = ace2_data, stroke = 0.5, shape = 21) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "darkred", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  scale_fill_manual(values = c("gray", "darkred", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 5e+04, y = 5, label = sprintf("Up in HV: %d", sum(ctrl.vs.cf$sign == "Upregulated"))) +
+  annotate("text", x = 5e+04, y = -4, label = sprintf("Up in homozygous\nF508del: %d", sum(ctrl.vs.cf$sign == "Downregulated"))) + 
+  ggtitle("HV vs CF F508del (Cluster A)") +
+  theme(legend.position = "none")
+dev.off()
+```
+
+
+```{r}
+sign.only <- ctrl.vs.cf[ctrl.vs.cf$padj < 0.05, ]
+sign.only$gene_name <- gene_table[rownames(sign.only), "Gene_Name"]
+write.csv(sign.only[order(sign.only$log2FoldChange, decreasing = TRUE), ], "04epi-ctrl-vs-cf.csv")
+```
+
+Query GO processes for up- and down-regulated genes here
+```{r}
+upreg_genes <- rownames(sign.only)[sign.only$sign == "Upregulated"]
+go_upreg <- go_enrichment(dds, upreg_genes, go_annotations = "org.Hs.eg.db")
+```
+```{r}
+downreg_genes <- rownames(sign.only)[sign.only$sign == "Downregulated"]
+go_downreg <- go_enrichment(dds, downreg_genes, go_annotations = "org.Hs.eg.db")
+```
+
+```{r}
+go_upreg$direction <- "Upregulated"
+go_downreg$direction <- "Downregulated"
+go_processes <- rbind(go_upreg, go_downreg)
+write.csv(go_processes, "04epi-ctrl-vs-f508del-go-processes.csv")
+```
+
+
+### Control vs CompHet
+```{r}
+ctrl.vs.het <- as.data.frame(results(dds, contrast = c("genotype", "HV", "CompHet")))
+ctrl.vs.het <- ctrl.vs.het[!is.na(ctrl.vs.het$padj), ]
+ctrl.vs.het$sign <- ""
+ctrl.vs.het$sign[(ctrl.vs.het$log2FoldChange < 0) & (ctrl.vs.het$padj < 0.05)] <- "Downregulated"
+ctrl.vs.het$sign[(ctrl.vs.het$log2FoldChange > 0) & (ctrl.vs.het$padj < 0.05)] <- "Upregulated"
+ctrl.vs.het <- ctrl.vs.het[order(ctrl.vs.het$sign),]
+```
+
+```{r}
+ace2_data <- as.data.frame(merge(ctrl.vs.het[ace2_id, ], gene_table[ace2_id, ]))
+```
+
+```{r}
+ggplot(ctrl.vs.het, aes(x = baseMean, y = log2FoldChange)) + 
+  geom_point(aes(fill = sign, color = sign), shape = 21, stroke = 0.5) +
+  geom_label_repel(
+    aes(label = Gene_Name, fontface = "italic"), 
+    data = ace2_data,
+    box.padding = 0.5,
+    seed = 100,
+  ) +
+  geom_point(aes(fill = sign), data = ace2_data, stroke = 0.5, shape = 21) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "darkorange3", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  scale_fill_manual(values = c("gray", "darkorange3", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 5e+04, y = 5, label = sprintf("Up in HV: %d", sum(ctrl.vs.het$sign == "Upregulated"))) +
+  annotate("text", x = 5e+04, y = -6, label = sprintf("Up in CompHet: %d", sum(ctrl.vs.het$sign == "Downregulated"))) + 
+  ggtitle("HV vs CompHet (Cluster A)") +
+  theme(legend.position = "none")
+```
+
+Save as PDF
+```{r}
+pdf("04epi-samples-control-vs-comphet.pdf", width=6, height=6)
+ggplot(ctrl.vs.het, aes(x = baseMean, y = log2FoldChange)) + 
+  geom_point(aes(fill = sign, color = sign), shape = 21, stroke = 0.5) +
+  geom_label_repel(
+    aes(label = Gene_Name, fontface = "italic"), 
+    data = ace2_data,
+    box.padding = 0.5,
+    seed = 100,
+  ) +
+  geom_point(aes(fill = sign), data = ace2_data, stroke = 0.5, shape = 21) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "darkorange3", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  scale_fill_manual(values = c("gray", "darkorange3", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 5e+04, y = 5, label = sprintf("Up in HV: %d", sum(ctrl.vs.het$sign == "Upregulated"))) +
+  annotate("text", x = 5e+04, y = -6, label = sprintf("Up in CompHet: %d", sum(ctrl.vs.het$sign == "Downregulated"))) + 
+  ggtitle("HV vs CompHet (Cluster A)") +
+  theme(legend.position = "none")
+dev.off()
+```
+
+
+```{r}
+sign.only <- ctrl.vs.het[ctrl.vs.het$padj < 0.05, ]
+sign.only$gene_name <- gene_table[rownames(sign.only), "Gene_Name"]
+write.csv(sign.only[order(sign.only$log2FoldChange, decreasing = TRUE), ], "04epi-ctrl-vs-het.csv")
+```
+
+
+### CompHet vs CF
+```{r}
+het.vs.cf <- as.data.frame(results(dds, contrast = c("genotype", "CompHet", "F508del")))
+het.vs.cf <- het.vs.cf[!is.na(het.vs.cf$padj), ]
+het.vs.cf$sign <- ""
+het.vs.cf$sign[(het.vs.cf$log2FoldChange < 0) & (het.vs.cf$padj < 0.05)] <- "Downregulated"
+het.vs.cf$sign[(het.vs.cf$log2FoldChange > 0) & (het.vs.cf$padj < 0.05)] <- "Upregulated"
+het.vs.cf <- het.vs.cf[order(het.vs.cf$sign),]
+```
+
+```{r}
+ggplot(het.vs.cf) + 
+  geom_point(aes(x = baseMean, y = log2FoldChange, col = sign)) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "red", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 2e+04, y = 5, label = sprintf("Up in CompHet: %d", sum(het.vs.cf$sign == "Upregulated"))) +
+  annotate("text", x = 2e+04, y = -6, label = sprintf("Down in CompHet: %d", sum(het.vs.cf$sign == "Downregulated"))) + 
+  ggtitle("CompHet vs CF F508del")
+```
+
+```{r}
+pdf("04epi-samples-comphet-vs-f508del.pdf", width=8, height=6)
+ggplot(het.vs.cf) + 
+  geom_point(aes(x = baseMean, y = log2FoldChange, col = sign)) +
+  scale_x_log10() +
+  scale_color_manual(values = c("gray", "red", "blue"), name = "Significance", labels = c("Not significant", "Downregulated", "Upregulated")) + 
+  annotate("text", x = 2e+04, y = 5, label = sprintf("Up in CompHet: %d", sum(het.vs.cf$sign == "Upregulated"))) +
+  annotate("text", x = 2e+04, y = -6, label = sprintf("Down in CompHet: %d", sum(het.vs.cf$sign == "Downregulated"))) + 
+  ggtitle("CompHet vs CF F508del")
+dev.off()
+```
+
+
+```{r}
+sign.only <- het.vs.cf[het.vs.cf$padj < 0.05, ]
+sign.only$gene_name <- gene_table[rownames(sign.only), "Gene_Name"]
+write.csv(sign.only[order(sign.only$log2FoldChange, decreasing = TRUE), ], "04epi-het-vs-cf.csv")
+```
+
+## IFN-1/2 signatures
+
+```{r}
+ifn1.genes <- read.table("HALLMARK_INTERFERON_ALPHA_RESPONSE.txt", header = FALSE, skip = 2)
+ifn1.genes <- gene_table[gene_table$Gene_Name %in% ifn1.genes$V1, "Ensembl_ID"]
+ifn2.genes <- read.table("HALLMARK_INTERFERON_GAMMA_RESPONSE.txt", header = FALSE, skip = 2)
+ifn2.genes <- gene_table[gene_table$Gene_Name %in% ifn2.genes$V1, "Ensembl_ID"]
+```
+
+Compute means of IFN-1/2 gene sets
+```{r}
+ifn1.means <- colMeans(counts_mat_orig[ifn1.genes, ])
+ifn2.means <- colMeans(counts_mat_orig[ifn2.genes, ])
+```
+
+```{r}
+ifn1.data <- as.data.frame(colData(dds_orig))
+ifn1.data$expr <- ifn1.means[rownames(ifn1.data)]
+ifn1.data$genotype <- factor(ifn1.data$genotype, levels = c("HV", "CompHet", "F508del"))
+```
+
+
+### IFN-I
+```{r}
+ggplot(ifn1.data) + 
+  stat_summary(aes(x = genotype, y = expr, ymax=expr, ymin=expr), fun = "mean", geom="crossbar", width = .5, size = .2) +
+  geom_jitter(aes(x = genotype, y = expr, color = genotype), width = 0.2, height = 0) +
+  xlab("") + ylab("Mean IFN-I genes expression") +
+  scale_color_manual(values = c("HV" = "blue", "CompHet" = "darkorange3", "F508del" = "darkred")) +
+  theme(axis.text.x = element_text(size = 14))
+```
+
+Save as PDF
+```{r}
+pdf("05ifn1-expr.pdf", width = 6, height = 4)
+ggplot(ifn1.data) + 
+  stat_summary(aes(x = genotype, y = expr, ymax=expr, ymin=expr), fun = "mean", geom="crossbar", width = .5, size = .2) +
+  geom_jitter(aes(x = genotype, y = expr, color = genotype), width = 0.2, height = 0) +
+  xlab("") + ylab("Mean IFN-I genes expression") +
+  scale_color_manual(values = c("HV" = "blue", "CompHet" = "darkorange3", "F508del" = "darkred")) +
+  theme(axis.text.x = element_text(size = 14))
+dev.off()
+```
+
+Are any significant?
+```{r}
+t.test(ifn1.data$expr[ifn1.data$genotype == "HV"], ifn1.data$expr[ifn1.data$genotype == "CompHet"])
+```
+
+```{r}
+t.test(ifn1.data$expr[ifn1.data$genotype == "HV"], ifn1.data$expr[ifn1.data$genotype == "F508del"])
+```
+
+No
+
+### IFN-II
+```{r}
+ifn2.data <- as.data.frame(colData(dds_orig))
+ifn2.data$expr <- ifn2.means[rownames(ifn2.data)]
+ifn2.data$genotype <- factor(ifn2.data$genotype, levels = c("HV", "CompHet", "F508del"))
+```
+
+```{r}
+ggplot(ifn2.data) + 
+  stat_summary(aes(x = genotype, y = expr, ymax=expr, ymin=expr), fun = "mean", geom="crossbar", width = .5, size = .2) +
+  geom_jitter(aes(x = genotype, y = expr, color = genotype), width = 0.2, height = 0) +
+  xlab("") + ylab("Mean IFN-II genes expression") +
+  scale_color_manual(values = c("HV" = "blue", "CompHet" = "darkorange3", "F508del" = "darkred")) +
+  theme(axis.text.x = element_text(size = 14))
+```
+
+Save as PDF
+```{r}
+pdf("05ifn2-expr.pdf", width = 6, height = 4)
+ggplot(ifn2.data) + 
+  stat_summary(aes(x = genotype, y = expr, ymax=expr, ymin=expr), fun = "mean", geom="crossbar", width = .5, size = .2) +
+  geom_jitter(aes(x = genotype, y = expr, color = genotype), width = 0.2, height = 0) +
+  xlab("") + ylab("Mean IFN-II genes expression") +
+  scale_color_manual(values = c("HV" = "blue", "CompHet" = "darkorange3", "F508del" = "darkred")) +
+  theme(axis.text.x = element_text(size = 14))
+dev.off()
+```
+
+Are any significant?
+```{r}
+t.test(ifn2.data$expr[ifn2.data$genotype == "HV"], ifn2.data$expr[ifn2.data$genotype == "CompHet"])
+```
+
+No.
+
+## Group IFN-1/2 expression by k-means clusters
+
+```{r}
+ifn1.data$cluster <- factor(group.names[kmeans.groups], levels = c("A", "B", "C"))
+```
+
+### IFN-I
+
+```{r}
+ggplot(ifn1.data, aes(x = cluster, y = expr, shape = cluster)) + 
+  stat_summary(aes(ymax = expr, ymin = expr), fun = "mean", geom="crossbar", width = .5, size = .2) +
+  geom_jitter(width = 0.2, height = 0, size = 2) +
+  xlab("") + ylab("Mean IFN-I genes expression") +
+  stat_compare_means(
+    comparisons = list(c("A", "B"), c("B", "C")),
+    label.y = c(16000, 17000),
+    method = "t.test"
+  ) +
+  theme(axis.text.x = element_text(size = 14))
+```
+
+Save as PDF
+```{r}
+pdf("06ifn1-expr-by-cluster.pdf", width = 6, height = 4)
+ggplot(ifn1.data, aes(x = cluster, y = expr, shape = cluster)) + 
+  stat_summary(aes(ymax = expr, ymin = expr), fun = "mean", geom="crossbar", width = .5, size = .2) +
+  geom_jitter(width = 0.2, height = 0, size = 2) +
+  xlab("") + ylab("Mean IFN-I genes expression") +
+  stat_compare_means(
+    comparisons = list(c("A", "B"), c("B", "C")),
+    label.y = c(16000, 17000),
+    method = "t.test"
+  ) +
+  theme(axis.text.x = element_text(size = 14))
+dev.off()
+```
+
+
+### IFN-II
+
+```{r}
+ifn2.data$cluster <- factor(group.names[kmeans.groups], levels = c("A", "B", "C"))
+```
+
+```{r}
+ggplot(ifn2.data, aes(x = cluster, y = expr, shape = cluster)) + 
+  stat_summary(aes(ymax = expr, ymin = expr), fun = "mean", geom="crossbar", width = .5, size = .2) +
+  geom_jitter(width = 0.2, height = 0, size = 2) +
+  xlab("") + ylab("Mean IFN-II genes expression") +
+  stat_compare_means(
+    comparisons = list(c("A", "B"), c("B", "C")),
+    label.y = c(16000, 17000),
+    method = "t.test"
+  ) +
+  theme(axis.text.x = element_text(size = 14))
+```
+
+Save as PDF
+```{r}
+pdf("06ifn2-expr-by-cluster.pdf", width = 6, height = 4)
+ggplot(ifn2.data, aes(x = cluster, y = expr, shape = cluster)) + 
+  stat_summary(aes(ymax = expr, ymin = expr), fun = "mean", geom="crossbar", width = .5, size = .2) +
+  geom_jitter(width = 0.2, height = 0, size = 2) +
+  xlab("") + ylab("Mean IFN-II genes expression") +
+  stat_compare_means(
+    comparisons = list(c("A", "B"), c("B", "C")),
+    label.y = c(16000, 17000),
+    method = "t.test"
+  ) +
+  theme(axis.text.x = element_text(size = 14))
+dev.off()
+```
+
+
+
+
