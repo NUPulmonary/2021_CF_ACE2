@@ -499,11 +499,11 @@ ctrl.vs.cf <- ctrl.vs.cf[order(ctrl.vs.cf$sign),]
 ```
 
 ```{r}
-ace2_id <- gene_table$Ensembl_ID[gene_table$Gene_Name == "ACE2"]
+ace2_id <- gene_table$Ensembl_ID[gene_table$Gene_Name %in% c("ACE2", "TMPRSS2")]
 ```
 
 ```{r}
-ace2_data <- as.data.frame(merge(ctrl.vs.cf[ace2_id, ], gene_table[ace2_id, ]))
+ace2_data <- as.data.frame(merge(ctrl.vs.cf[ace2_id, ], gene_table[ace2_id, ], by = "row.names"))
 ```
 
 ```{r}
@@ -679,7 +679,7 @@ ctrl.vs.het <- ctrl.vs.het[order(ctrl.vs.het$sign),]
 ```
 
 ```{r}
-ace2_data <- as.data.frame(merge(ctrl.vs.het[ace2_id, ], gene_table[ace2_id, ]))
+ace2_data <- as.data.frame(merge(ctrl.vs.het[ace2_id, ], gene_table[ace2_id, ], by = "row.names"))
 ```
 
 ```{r}
@@ -795,7 +795,7 @@ ctrl.vs.cf <- ctrl.vs.cf[order(ctrl.vs.cf$sign),]
 ```
 
 ```{r}
-ace2_data <- as.data.frame(merge(ctrl.vs.cf[ace2_id, ], gene_table[ace2_id, ]))
+ace2_data <- as.data.frame(merge(ctrl.vs.cf[ace2_id, ], gene_table[ace2_id, ], by = "row.names", suffixes = c("", ".y")))
 ```
 
 ```{r}
@@ -875,7 +875,7 @@ ctrl.vs.het <- ctrl.vs.het[order(ctrl.vs.het$sign),]
 ```
 
 ```{r}
-ace2_data <- as.data.frame(merge(ctrl.vs.het[ace2_id, ], gene_table[ace2_id, ]))
+ace2_data <- as.data.frame(merge(ctrl.vs.het[ace2_id, ], gene_table[ace2_id, ], by = "row.names", suffixes = c("", ".y")))
 ```
 
 ```{r}
